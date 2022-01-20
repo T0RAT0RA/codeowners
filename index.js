@@ -48,7 +48,14 @@ program
     const stream = walkStream(rootPath, {
       deepFilter: (entry) => {
         const split = entry.path.split(path.sep);
-        return !split.includes('node_modules') && !split.includes('.git');
+        const relative = path
+          .relative(codeowners.codeownersDirectory, entry.path)
+          .replace(/(\r)/g, '\\r');
+        return (
+          !split.includes('node_modules') &&
+          !split.includes('.git') &&
+          !gitignoreMatcher.ignores(relative)
+        );
       },
       errorFilter: (error) =>
         error.code === 'ENOENT' || error.code === 'EACCES' || error.code === 'EPERM',
@@ -58,6 +65,10 @@ program
       const relative = path
         .relative(codeowners.codeownersDirectory, file.path)
         .replace(/(\r)/g, '\\r');
+
+      if (gitignoreMatcher.ignores(relative)) {
+        return;
+      }
 
       const owners = codeowners.getOwner(relative);
 
