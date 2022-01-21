@@ -11,6 +11,7 @@ const padEnd = require('lodash.padend');
 const path = require('path');
 const program = require('commander');
 const { walkStream } = require('@nodelib/fs.walk');
+const { execSync } = require('child_process');
 
 const Codeowners = require('./codeowners.js');
 
@@ -43,35 +44,59 @@ program
       process.exit(1);
     }
 
+    const report = {};
     const padding = parseInt(options.width, 10);
 
-    const stream = walkStream(rootPath, {
-      deepFilter: (entry) => {
-        const split = entry.path.split(path.sep);
-        const relative = path
-          .relative(codeowners.codeownersDirectory, entry.path)
-          .replace(/(\r)/g, '\\r');
-        return (
-          !split.includes('node_modules') &&
-          !split.includes('.git') &&
-          !gitignoreMatcher.ignores(relative)
-        );
-      },
-      errorFilter: (error) =>
-        error.code === 'ENOENT' || error.code === 'EACCES' || error.code === 'EPERM',
-    });
+    // TODO: walkStream reads untracked git files which should be excluded
+    // const stream = walkStream(rootPath, {
+    //   deepFilter: (entry) => {
+    //     const split = entry.path.split(path.sep);
+    //     const relative = path
+    //       .relative(codeowners.codeownersDirectory, entry.path)
+    //       .replace(/(\r)/g, '\\r');
+    //     return (
+    //       !split.includes('node_modules') &&
+    //       !split.includes('.git') &&
+    //       !gitignoreMatcher.ignores(relative)
+    //     );
+    //   },
+    //   errorFilter: (error) =>
+    //     error.code === 'ENOENT' || error.code === 'EACCES' || error.code === 'EPERM',
+    // });
 
-    stream.on('data', (file) => {
-      const relative = path
-        .relative(codeowners.codeownersDirectory, file.path)
-        .replace(/(\r)/g, '\\r');
+    const stream = require('stream');
+    const readable = new stream.Readable();
 
-      if (gitignoreMatcher.ignores(relative)) {
+    // readable.pipe(process.stdout);
+
+    const trackedFileList = execSync('git ls-files', { encoding: 'utf-8' })
+      .split('\n')
+      .filter((f) => f !== '');
+    trackedFileList.forEach((item) => readable.push(item));
+
+    // no more data
+    readable.push(null);
+
+    readable.on('data', (buffer) => {
+      const file = buffer.toString();
+      const relative = path.relative(codeowners.codeownersDirectory, file).replace(/(\r)/g, '\\r');
+
+      let stats;
+      try {
+        stats = fs.statSync(relative);
+      } catch {
+        // Can't read path, skip
+        return;
+      }
+
+      if (gitignoreMatcher.ignores(relative) || stats.isDirectory()) {
         return;
       }
 
       const owners = codeowners.getOwner(relative);
 
+      report[relative] = owners;
+      return;
       if (options.unowned) {
         if (!owners.length) {
           console.log(relative);
@@ -83,8 +108,27 @@ program
       }
     });
 
-    stream.on('error', (err) => {
+    readable.on('error', (err) => {
       console.error(err);
+    });
+    readable.on('end', () => {
+      // console.log(JSON.stringify(report));
+      const totalFiles = Object.keys(report).length;
+      const totalFilesOwned = Object.entries(report).filter(([, value]) => value.length).length;
+
+      // JSON
+      console.log(
+        JSON.stringify({
+          total_files: totalFiles,
+          total_files_owned: totalFilesOwned,
+          ownership_coverage: ((totalFilesOwned / totalFiles) * 100).toFixed(2),
+        })
+      );
+
+      // CSV
+      // console.log(
+      //   `${totalFiles}, ${totalFilesOwned}, ${((totalFilesOwned / totalFiles) * 100).toFixed(2)}`
+      // );
     });
   });
 
